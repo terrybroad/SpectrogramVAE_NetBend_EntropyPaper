@@ -1,4 +1,4 @@
-import tensorflow as tf
+# import tensorflow as tf
 import os
 
 os.environ['TF_XLA_FLAGS'] = '--tf_xla_enable_xla_devices'
@@ -13,12 +13,14 @@ from numpy.random import randn
 from numpy.random import randint
 from numpy import linspace
 import soundfile as sf
+from torchvision import utils
+# from math import e
 
 #Hyperparameters
 LEARNING_RATE = 0.0005
 EPOCHS =  40
 BATCH_SIZE  = 64 
-VECTOR_DIM = 64
+VECTOR_DIM = 128
 
 hop=256               #hop size (window size = 4*hop)
 sr=44100              #sampling rate
@@ -48,6 +50,7 @@ import math
 import heapq
 from torchaudio.transforms import MelScale, Spectrogram
 from model import Encoder, Decoder
+import torchaudio
 
 torch.set_default_tensor_type('torch.cuda.FloatTensor')
 
@@ -157,14 +160,27 @@ def tospeclong(path, length=4*44100):
   print(specs.shape)
   return specs
 
+# #Waveform array from path of folder containing wav files
+# def audio_array(path):
+#   ls = glob(f'{path}/*.wav')
+#   adata = []
+#   for i in range(len(ls)):
+#     #CHANGE TO TORCHAUDIO
+#     x, sr = tf.audio.decode_wav(tf.io.read_file(ls[i]), 1)
+#     x = np.array(x, dtype=np.float32)
+#     adata.append(x)
+#   return np.array(adata)
+
 #Waveform array from path of folder containing wav files
 def audio_array(path):
   ls = glob(f'{path}/*.wav')
   adata = []
   for i in range(len(ls)):
-    x, sr = tf.audio.decode_wav(tf.io.read_file(ls[i]), 1)
-    x = np.array(x, dtype=np.float32)
-    adata.append(x)
+    print(ls[i])
+    x, sr = torchaudio.load(ls[i])
+    x = x.numpy()
+    print(x)
+    adata.append(x[0])
   return np.array(adata)
 
 #Concatenate spectrograms in array along the time axis
@@ -202,6 +218,16 @@ def splitcut(data):
       ls.append(x[:,-minifinal:,:])
   return np.array(ls)
 
+def save_spec_as_image(spectrogram, out_path):
+
+    # spec = numpy.log(spectrogram + 1e-9) # add small number to avoid log(0)
+    spec = Spectrogram.to('cpu').to
+    # min-max scale to fit inside 8-bit range
+    img = scale_minmax(spec, 0, 255).astype(numpy.uint8)
+    img = numpy.flip(img, axis=1) # put low frequencies at the bottom in image
+    img = 255-img # invert. make black==more energy
+    # save as PNG
+    skimage.io.imsave(out_path, img)
 
 """## Training"""
 
@@ -209,7 +235,7 @@ def splitcut(data):
 #Generating Mel-Spectrogram dataset (Uncomment where needed)
 #adata: source spectrograms
 
-audio_directory = "/home/terence/Music/monkey_wavs"
+audio_directory = "/home/terence/Music/br_wav"
 
 #AUDIO TO CONVERT
 awv = audio_array(audio_directory)         #get waveform array from folder containing wav files
@@ -227,6 +253,7 @@ resume_training_checkpoint_path = ""
 
 encoder = Encoder(128)
 decoder = Decoder(128)
+beta = 0.001
 
 e_optim = optim.Adam(encoder.parameters(), lr=0.0003, betas=(0, 0.99))
 d_optim = optim.Adam(decoder.parameters(), lr=0.0003, betas=(0, 0.99))
@@ -246,12 +273,29 @@ if __name__ == "__main__":
 
             recon_loss = criterion(x, _x)
 
-            loss = recon_loss + kld
-            print("loss: "+str(loss))
+            #TAKE THE LOG TO TRY AND OVERCOME POSTERIOR COLLAPSE
+            #ADD ONE TO AVOID NEGATIVE NUMBERS
+            kld = torch.log(kld + torch.tensor(1).detach())
+
+            loss = recon_loss + kld * beta
+            print("iter: "+str(i)+ ", total_loss: "+str(loss.item())+", recon_loss: " + str(recon_loss.item()) + ", kld: "+str(kld.item()))
             loss.backward()
             e_optim.step()
             d_optim.step()
-            if i % 10000 == 0:
+
+            if i % 100 == 0:
+              print("howdy")
+              utils.save_image(x, f'sample/{str(i).zfill(6)}_input.png',
+                nrow=8,
+                normalize=True,
+                range=(-1, 1))
+              save_spec_as_image(x[:,0], f'sample/{str(i).zfill(6)}_skspec.png')
+              utils.save_image(_x, f'sample/{str(i).zfill(6)}_output.png',
+                nrow=8,
+                normalize=True,
+                range=(-1, 1))
+
+            if i % 1000 == 0:
               torch.save(
                 {
                   "encoder": encoder.state_dict(),

@@ -3,6 +3,8 @@ import math
 from torch import nn
 from torch.nn import functional as F
 from torch.autograd import Function
+from functools import reduce
+from operator import __add__
 
 def get_active_func(s):
     if s == "ReLU":
@@ -24,14 +26,14 @@ class Encoder(nn.Module):
         super().__init__()
         self.latent_dim = latent_dim
         self.convs = nn.ModuleList()
-        self.fc = nn.Linear(6656, self.latent_dim)
+        self.fc = nn.Linear(34816, self.latent_dim)
         
         hidden_dims = [64, 128, 256, 512, 512]
 
         in_channels = 1
         for h_dim in hidden_dims:
             self.convs.append(
-                ConvLayer(in_channels,h_dim,5,2,activation_function="ReLU") 
+                ConvLayer(in_channels,h_dim,(5,5),(2,2),activation_function="ReLU") 
             )
             in_channels = h_dim
     
@@ -41,7 +43,7 @@ class Encoder(nn.Module):
         return mu + eps*std
 
     def kl_divergence(self, mu, logvar):
-        return (-0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())) / self.latent_dim
+        return  torch.mean((-0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())) / self.latent_dim)
 
     def encode(self, input):
         x = input
@@ -57,6 +59,32 @@ class Encoder(nn.Module):
         z = self.reparameterisation(mu, logvar)
         return z, kld
 
+# class Discriminator(nn.Module):
+#     def __init__(
+#         self,
+#         latent_dim
+#     ):
+#         super().__init__()
+#         self.latent_dim = latent_dim
+#         self.convs = nn.ModuleList()
+#         self.fc = nn.Linear(34816, self.latent_dim)
+        
+#         hidden_dims = [64, 128, 256, 512, 512]
+
+#         in_channels = 1
+#         for h_dim in hidden_dims:
+#             self.convs.append(
+#                 ConvLayer(in_channels,h_dim,(5,5),(2,2),activation_function="ReLU") 
+#             )
+#             in_channels = h_dim
+
+#     def forward(self, input):
+#         x = input
+#         for conv in self.convs:
+#             x = conv(x)
+#         out = torch.flatten(x,start_dim=1)
+#         prob = self.fc(out)
+#         return out, prob
 
 class Decoder(nn.Module):
     def __init__(
@@ -64,31 +92,52 @@ class Decoder(nn.Module):
         latent_dim
     ):
         super().__init__()
-        hidden_dims = [512, 256, 128, 64]
+        h_dims = [512, 256, 128, 64]
         self.latent_dim = latent_dim
-        self.decoder_input = nn.Linear(latent_dim, hidden_dims[0]*13)
+        self.decoder_input = nn.Linear(latent_dim, 34816)
         self.convs = nn.ModuleList()
-        in_channels = hidden_dims[0]
-        for h_dim in hidden_dims:
-            if h_dim < 256:
-                self.convs.append(
-                    ConvLayer(in_channels,h_dim,5,2,output_padding=(1),activation_function="ReLU",transpose=True) 
-                )
-            else:
-                self.convs.append(
-                    ConvLayer(in_channels,h_dim,5,2,activation_function="ReLU",transpose=True) 
-                )
-            in_channels = h_dim
-        self.final_layer = ConvLayer(64, 1, 3, 2, activation_function="Tanh",transpose=True) 
+        in_channels = h_dims[0]
+        #Very unsatisfactory way of matchign dimensions in encoder :/
+        self.convs.append( 
+            ConvLayer(
+                in_channels,
+                h_dims[0],
+                (5,5),
+                (1,2),
+                padding=(0,2),
+                activation_function="ReLU",transpose=True) )
+        self.convs.append( 
+            ConvLayer(
+                in_channels,
+                h_dims[1],
+                (3,5),
+                (2,2),
+                padding=(0,2),
+                activation_function="ReLU",transpose=True) )
+        self.convs.append( 
+            ConvLayer(
+                h_dims[1],
+                h_dims[2],
+                (4,5),
+                (2,2),
+                padding=(2,2),
+                activation_function="ReLU",transpose=True) )
+        self.convs.append( 
+            ConvLayer(
+                h_dims[2],
+                h_dims[3],
+                (4,5),
+                (2,2),
+                padding=(1,2),
+                activation_function="ReLU",transpose=True) )
+        self.final_layer = ConvLayer(h_dims[3], 1, (4,5), (2,2), padding=(1,2), activation_function="Tanh",transpose=True) 
 
     def forward(self, input):
         x = self.decoder_input(input)
-        x = torch.reshape(x, (64,512,1,13))
+        x = torch.reshape(x, (input.shape[0],512,4,17))
         for conv in self.convs:
             x = conv(x)
         x = self.final_layer(x)
-        #drop row from tensor bc I cannit figure out how to get them the same dim
-        x = x[:,:,0:128,:] 
         return x
 
 class ConvLayer(nn.Module):
@@ -99,6 +148,7 @@ class ConvLayer(nn.Module):
         kernel_size, 
         stride=1, 
         padding=0, 
+        z_pad=0,
         output_padding=0,
         bias=True,
         activation_function="ReLU",
@@ -107,10 +157,6 @@ class ConvLayer(nn.Module):
         super().__init__()
 
         self.activation_function = get_active_func(activation_function)
-        self.weight = nn.Parameter(
-            torch.randn(out_channel, in_channel, kernel_size, kernel_size)
-        )
-        self.scale = 1 / math.sqrt(in_channel * kernel_size ** 2)
         self.transpose = transpose
         self.stride = stride
         self.padding = padding
@@ -120,8 +166,23 @@ class ConvLayer(nn.Module):
         self.out_channel=out_channel
         self.bias = bias
 
+        self.zero_pad_2d = nn.ZeroPad2d((0,0,0,0))
+        ##ADD ANOTHER BATCHNORM FOR INPUT?
+        self.batch_norm_1 = nn.BatchNorm2d(in_channel)
+        self.batch_norm_2 = nn.BatchNorm2d(out_channel)
+        
+        if transpose == False:
+            self.zero_pad_2d = nn.ZeroPad2d(reduce(__add__,
+                [(k // 2 + (k - 2 * (k // 2)) - 1, k // 2) for k in self.kernel_size[::-1]]))
+        
+        if z_pad != 0:
+            self.zero_pad_2d = nn.ZeroPad2d(z_pad)
+
+
         if self.transpose == True:
             self.layer_seq = nn.Sequential(
+                self.zero_pad_2d,
+                self.batch_norm_1,
                 nn.ConvTranspose2d(
                 self.in_channel,
                 self.out_channel,
@@ -130,10 +191,13 @@ class ConvLayer(nn.Module):
                 stride=self.stride,
                 padding=self.padding,
                 output_padding=self.output_padding), 
+                self.batch_norm_2,
                 self.activation_function
             )
         else:
             self.layer_seq = nn.Sequential(
+                self.zero_pad_2d,
+                self.batch_norm_1,
                 nn.Conv2d(
                 self.in_channel,
                 self.out_channel,
@@ -141,10 +205,14 @@ class ConvLayer(nn.Module):
                 bias=self.bias,
                 stride=self.stride,
                 padding=self.padding),
+                self.batch_norm_2,
                 self.activation_function
             )
 
     def forward(self, input):
         out = self.layer_seq(input)
         return out
+
+
+
 

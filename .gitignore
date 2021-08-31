@@ -130,3 +130,5 @@ dmypy.json
 
 #pyTorch
 *.pt
+*.png 
+*.wav 
