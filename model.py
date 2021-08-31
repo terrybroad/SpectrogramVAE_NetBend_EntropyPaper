@@ -59,32 +59,32 @@ class Encoder(nn.Module):
         z = self.reparameterisation(mu, logvar)
         return z, kld
 
-# class Discriminator(nn.Module):
-#     def __init__(
-#         self,
-#         latent_dim
-#     ):
-#         super().__init__()
-#         self.latent_dim = latent_dim
-#         self.convs = nn.ModuleList()
-#         self.fc = nn.Linear(34816, self.latent_dim)
+class Discriminator(nn.Module):
+    def __init__(
+        self,
+        latent_dim
+    ):
+        super().__init__()
+        self.latent_dim = latent_dim
+        self.convs = nn.ModuleList()
+        self.fc = nn.Linear(34816, self.latent_dim)
         
-#         hidden_dims = [64, 128, 256, 512, 512]
+        hidden_dims = [64, 128, 256, 512, 512]
 
-#         in_channels = 1
-#         for h_dim in hidden_dims:
-#             self.convs.append(
-#                 ConvLayer(in_channels,h_dim,(5,5),(2,2),activation_function="ReLU") 
-#             )
-#             in_channels = h_dim
+        in_channels = 1
+        for h_dim in hidden_dims:
+            self.convs.append(
+                ConvLayer(in_channels,h_dim,(5,5),(2,2),activation_function="ReLU") 
+            )
+            in_channels = h_dim
 
-#     def forward(self, input):
-#         x = input
-#         for conv in self.convs:
-#             x = conv(x)
-#         out = torch.flatten(x,start_dim=1)
-#         prob = self.fc(out)
-#         return out, prob
+    def forward(self, input):
+        x = input
+        for conv in self.convs:
+            x = conv(x)
+        out = torch.flatten(x,start_dim=1)
+        prob = self.fc(out)
+        return out, prob
 
 class Decoder(nn.Module):
     def __init__(
