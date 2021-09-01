@@ -216,7 +216,7 @@ if __name__ == "__main__":
     parser.add_argument('--ckpt', type=str, default="")
     parser.add_argument('--data', type=str, default="/home/terence/Music/bach_wavs")
     parser.add_argument('--run_name', type=str, default="test")
-    parser.add_argument('--save_dir', type=str, default="ckpt/")
+    parser.add_argument('--save_dir', type=str, default="ckpt")
     args = parser.parse_args()
 
     encoder = Encoder(args.vector_dim)
@@ -251,6 +251,7 @@ if __name__ == "__main__":
 
             batch = adata[np.random.randint(adata.shape[0], size=args.batch), :]
             x = torch.tensor(batch).to('cuda').transpose(1,3)
+            z, kld = encoder(x)
             _x = decoder(z)
 
             recon_loss = criterion(x, _x)
@@ -285,5 +286,5 @@ if __name__ == "__main__":
                   "e_optim": e_optim.state_dict(),
                   "d_optim": d_optim.state_dict()
                 }, 
-                'checkpoint'+args.save_dir+'/'+str(i)+'.pt')    
+                args.save_dir+'/checkpoint_'+str(i)+'.pt')    
 

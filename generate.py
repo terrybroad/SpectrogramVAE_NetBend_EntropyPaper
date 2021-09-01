@@ -240,7 +240,7 @@ decoder = Decoder(128)
 
 
 """## Generation"""
-d_state_dict = torch.load('/home/terence/repos/SpectrogramVAE/bach/checkpoint50000.pt')['decoder']
+d_state_dict = torch.load('/home/terence/repos/SpectrogramVAE/bach/checkpoint99000.pt')['decoder']
 decoder.load_state_dict(d_state_dict)
 
 
@@ -508,5 +508,5 @@ def interp_gen(num_samples=1, _use_seed=False, _seed=1001, interp_steps=5, z_sca
 
 if __name__ == "__main__":
     #one_shot_gen(num_samples=10, name="amazondotcom_test")
-    noise_gen(num_samples=64,_use_seed=False,_noise_type="perlin", z_scale=2.5, name="uniform_test2s", save=True)
-    # interp_gen(num_samples=10, _use_seed=False, _seed=1001, interp_steps=64, z_scale=-1.5, interp_scale=1.0, save=True, name="interp_test2", path="/home/terence/repos/SpectrogramVAE/sample")
+    # noise_gen(num_samples=64,_use_seed=False,_noise_type="perlin", z_scale=2.5, name="uniform_test2s", save=True)
+    interp_gen(num_samples=10, _use_seed=False, _seed=1001, interp_steps=64, z_scale=-1.5, interp_scale=1.0, save=True, name="interp_test2", path="/home/terence/repos/SpectrogramVAE/sample")
