@@ -1,36 +1,30 @@
-# import tensorflow as tf
 import os
-
-os.environ['TF_XLA_FLAGS'] = '--tf_xla_enable_xla_devices'
-
-from glob import glob
+import math
+import heapq
+import torch
+import argparse
+import torchaudio
 import librosa
 import librosa.display
+import torch.nn as nn
+import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import numpy as np
+import soundfile as sf
+
 from numpy import asarray
 from numpy.random import randn
 from numpy.random import randint
 from numpy import linspace
-import soundfile as sf
+from glob import glob
 from torchvision import utils
-# from math import e
+from torch import autograd, optim
+from tqdm import tqdm
+from functools import partial
+from torchaudio.transforms import MelScale, Spectrogram
+from model import Encoder, Decoder
 
-#Hyperparameters
-LEARNING_RATE = 0.0005
-EPOCHS =  40
-BATCH_SIZE  = 64 
-VECTOR_DIM = 128
-
-hop=256               #hop size (window size = 4*hop)
-sr=44100              #sampling rate
-min_level_db=-100     #reference values to normalize data
-ref_level_db=20
-
-shape=128           #length of time axis of split specrograms
-spec_split=1
-
-maxiter=100000
+torch.set_default_tensor_type('torch.cuda.FloatTensor')
 
 #Waveform to Spectrogram conversion
 
@@ -40,22 +34,6 @@ IEEE/ACM Transactions on Audio, Speech, and Language Processing 23, no. 1 (2014)
 
 #ORIGINAL CODE FROM https://github.com/yoyololicon/spectrogram-inversion
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch import autograd, optim
-from tqdm import tqdm
-from functools import partial
-import math
-import heapq
-from torchaudio.transforms import MelScale, Spectrogram
-from model import Encoder, Decoder
-import torchaudio
-
-torch.set_default_tensor_type('torch.cuda.FloatTensor')
-
-specobj = Spectrogram(n_fft=4*hop, win_length=4*hop, hop_length=hop, pad=0, power=2, normalized=False)
-specfunc = specobj.forward
 # melobj = MelScale(n_mels=hop, sample_rate=sr, f_min=0.)
 # melfunc = melobj.forward
 
@@ -107,19 +85,19 @@ def GRAD(spec, transform_fn, samples=None, init_x0=None, maxiter=1000, tol=1e-6,
 
     return x.detach().view(-1).cpu()
 
-def normalize(S):
-  return np.clip((((S - min_level_db) / -min_level_db)*2.)-1., -1, 1)
+def normalize(S, args):
+  return np.clip((((S - args.min_db) / -args.min_db)*2.)-1., -1, 1)
 
-def denormalize(S):
-  return (((np.clip(S, -1, 1)+1.)/2.) * -min_level_db) + min_level_db
+def denormalize(S, args):
+  return (((np.clip(S, -1, 1)+1.)/2.) * -args.min_db) + args.min_db
 
-def prep(wv,hop=192):
+def prep(wv, args, specfunc):
   S = np.array(torch.squeeze(specfunc(torch.Tensor(wv).view(1,-1))).detach().cpu())
-  S = librosa.power_to_db(S)-ref_level_db
-  return normalize(S)
+  S = librosa.power_to_db(S)-args.ref_db
+  return normalize(S, args)
 
-def deprep(S):
-  S = denormalize(S)+ref_level_db
+def deprep(S, args, specfunc):
+  S = denormalize(S)+args.ref_db
   S = librosa.db_to_power(S)
   wv = GRAD(np.expand_dims(S,0), specfunc, maxiter=2500, evaiter=10, tol=1e-8)
   return np.array(np.squeeze(wv))
@@ -127,11 +105,11 @@ def deprep(S):
 #---------Helper functions------------#
 
 #Generate spectrograms from waveform array
-def tospec(data):
+def tospec(data, args, specfunc):
   specs=np.empty(data.shape[0], dtype=object)
   for i in range(data.shape[0]):
     x = data[i]
-    S=prep(x)
+    S=prep(x, args, specfunc)
     S = np.array(S, dtype=np.float32)
     specs[i]=np.expand_dims(S, -1)
   print(specs.shape)
@@ -159,17 +137,6 @@ def tospeclong(path, length=4*44100):
       print('spectrogram failed')
   print(specs.shape)
   return specs
-
-# #Waveform array from path of folder containing wav files
-# def audio_array(path):
-#   ls = glob(f'{path}/*.wav')
-#   adata = []
-#   for i in range(len(ls)):
-#     #CHANGE TO TORCHAUDIO
-#     x, sr = tf.audio.decode_wav(tf.io.read_file(ls[i]), 1)
-#     x = np.array(x, dtype=np.float32)
-#     adata.append(x)
-#   return np.array(adata)
 
 #Waveform array from path of folder containing wav files
 def audio_array(path):
@@ -199,76 +166,91 @@ def testass(a):
   return np.squeeze(con)
 
 #Split spectrograms in chunks with equal size
-def splitcut(data):
+def splitcut(data,args):
   ls = []
   mini = 0
-  minifinal = spec_split*shape   #max spectrogram length
+  minifinal = args.spec_split*args.shape   #max spectrogram length
   for i in range(data.shape[0]-1):
     if data[i].shape[1]<=data[i+1].shape[1]:
       mini = data[i].shape[1]
     else:
       mini = data[i+1].shape[1]
-    if mini>=3*shape and mini<minifinal:
+    if mini>=3*args.shape and mini<minifinal:
       minifinal = mini
   for i in range(data.shape[0]):
     x = data[i]
-    if x.shape[1]>=3*shape:
+    if x.shape[1]>=3*args.shape:
       for n in range(x.shape[1]//minifinal):
         ls.append(x[:,n*minifinal:n*minifinal+minifinal,:])
       ls.append(x[:,-minifinal:,:])
   return np.array(ls)
 
-def save_spec_as_image(spectrogram, out_path):
+# def save_spec_as_image(spectrogram, out_path):
 
-    # spec = numpy.log(spectrogram + 1e-9) # add small number to avoid log(0)
-    spec = Spectrogram.to('cpu').to
-    # min-max scale to fit inside 8-bit range
-    img = scale_minmax(spec, 0, 255).astype(numpy.uint8)
-    img = numpy.flip(img, axis=1) # put low frequencies at the bottom in image
-    img = 255-img # invert. make black==more energy
-    # save as PNG
-    skimage.io.imsave(out_path, img)
+#     # spec = numpy.log(spectrogram + 1e-9) # add small number to avoid log(0)
+#     spec = Spectrogram.to('cpu').to.numpy()
+#     # min-max scale to fit inside 8-bit range
+#     img = scale_minmax(spec, 0, 255).astype(numpy.uint8)
+#     img = numpy.flip(img, axis=1) # put low frequencies at the bottom in image
+#     img = 255-img # invert. make black==more energy
+#     # save as PNG
+#     skimage.io.imsave(out_path, img)
 
-"""## Training"""
-
-#Import folder containing .wav files for training
-#Generating Mel-Spectrogram dataset (Uncomment where needed)
-#adata: source spectrograms
-
-audio_directory = "/home/terence/Music/br_wav"
-
-#AUDIO TO CONVERT
-awv = audio_array(audio_directory)         #get waveform array from folder containing wav files
-aspec = tospec(awv)                        #get spectrogram array
-adata = splitcut(aspec)                    #split spectrogams to fixed
-print(np.shape(adata))
-
-#Start training from scratch or resume training
-
-training_run_name = "aerofonos_test_train" 
-checkpoint_save_directory = ""
-resume_training = False 
-resume_training_checkpoint_path = "" 
-# current_time = get_time_stamp()
-
-encoder = Encoder(128)
-decoder = Decoder(128)
-beta = 0.001
-
-e_optim = optim.Adam(encoder.parameters(), lr=0.0003, betas=(0, 0.99))
-d_optim = optim.Adam(decoder.parameters(), lr=0.0003, betas=(0, 0.99))
-criterion = nn.MSELoss()
 
 if __name__ == "__main__":
+    device = 'cuda'
+
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument('--lr', type=float, default=0.0003)
+    parser.add_argument('--batch', type=int, default=64)
+    parser.add_argument('--vector_dim', type=int, default=128)
+    parser.add_argument('--maxiter', type=int, default=100001)
+    parser.add_argument('--hop', type=int, default=256)
+    parser.add_argument('--sr', type=int, default=44100)
+    parser.add_argument('--min_db', type=int, default=-100)
+    parser.add_argument('--ref_db', type=int, default=20)
+    parser.add_argument('--spec_split', type=int, default=1)
+    parser.add_argument('--shape', type=int, default=128)
+    parser.add_argument('--beta', type=int, default=0.001)
+    parser.add_argument('--ckpt', type=str, default="")
+    parser.add_argument('--data', type=str, default="/home/terence/Music/bach_wavs")
+    parser.add_argument('--run_name', type=str, default="test")
+    parser.add_argument('--save_dir', type=str, default="ckpt/")
+    args = parser.parse_args()
+
+    encoder = Encoder(args.vector_dim)
+    decoder = Decoder(args.vector_dim)
+
+    e_optim = optim.Adam(encoder.parameters(), lr=args.lr, betas=(0, 0.99))
+    d_optim = optim.Adam(decoder.parameters(), lr=args.lr, betas=(0, 0.99))
+    criterion = nn.MSELoss()
+
+    if args.ckpt != "":
+      state_dict = torch.load(args.ckpt)
+      encoder.load_state_dict(state_dict['encoder'])
+      decoder.load_state_dict(state_dict['decoder'])
+      e_optim.load_state_dict(state_dict['e_optim'])
+      d_optim.load_state_dict(state_dict['d_optim'])
+
+    specobj = Spectrogram(n_fft=4*args.hop, win_length=4*args.hop, hop_length=args.hop, pad=0, power=2, normalized=False)
+    specfunc = specobj.forward
+
+    #AUDIO TO CONVERT
+    awv = audio_array(args.data)         #get waveform array from folder containing wav files
+    print(awv)
+    aspec = tospec(awv, args, specfunc)                        #get spectrogram array
+    adata = splitcut(aspec, args)                    #split spectrogams to fixed
+    print(np.shape(adata))
+
     number_of_rows = adata.shape[0]
-    with tqdm(total=maxiter) as pbar:
-        for i in range(maxiter):
+    with tqdm(total=args.maxiter) as pbar:
+        for i in range(args.maxiter):
             e_optim.zero_grad()
             d_optim.zero_grad()
 
-            batch = adata[np.random.randint(adata.shape[0], size=BATCH_SIZE), :]
+            batch = adata[np.random.randint(adata.shape[0], size=args.batch), :]
             x = torch.tensor(batch).to('cuda').transpose(1,3)
-            z, kld = encoder(x)
             _x = decoder(z)
 
             recon_loss = criterion(x, _x)
@@ -277,7 +259,7 @@ if __name__ == "__main__":
             #ADD ONE TO AVOID NEGATIVE NUMBERS
             kld = torch.log(kld + torch.tensor(1).detach())
 
-            loss = recon_loss + kld * beta
+            loss = recon_loss + kld * args.beta
             print("iter: "+str(i)+ ", total_loss: "+str(loss.item())+", recon_loss: " + str(recon_loss.item()) + ", kld: "+str(kld.item()))
             loss.backward()
             e_optim.step()
@@ -289,7 +271,7 @@ if __name__ == "__main__":
                 nrow=8,
                 normalize=True,
                 range=(-1, 1))
-              save_spec_as_image(x[:,0], f'sample/{str(i).zfill(6)}_skspec.png')
+              # save_spec_as_image(x[:,0], f'sample/{str(i).zfill(6)}_skspec.png')
               utils.save_image(_x, f'sample/{str(i).zfill(6)}_output.png',
                 nrow=8,
                 normalize=True,
@@ -303,5 +285,5 @@ if __name__ == "__main__":
                   "e_optim": e_optim.state_dict(),
                   "d_optim": d_optim.state_dict()
                 }, 
-                'checkpoint'+str(i)+'.pt')    
+                'checkpoint'+args.save_dir+'/'+str(i)+'.pt')    
 
