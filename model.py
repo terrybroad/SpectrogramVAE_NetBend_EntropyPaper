@@ -26,7 +26,7 @@ class Encoder(nn.Module):
         super().__init__()
         self.latent_dim = latent_dim
         self.convs = nn.ModuleList()
-        self.fc = nn.Linear(34816, self.latent_dim)
+        self.fc = nn.Linear(16384, self.latent_dim)
         
         hidden_dims = [64, 128, 256, 512, 512]
 
@@ -47,9 +47,12 @@ class Encoder(nn.Module):
 
     def encode(self, input):
         x = input
+        print(x.shape)
         for conv in self.convs:
             x = conv(x)
+            print(x.shape)
         out = torch.flatten(x,start_dim=1)
+        print(out.shape)
         out = self.fc(out)
         return out, out
 
@@ -65,52 +68,29 @@ class Decoder(nn.Module):
         latent_dim
     ):
         super().__init__()
-        h_dims = [512, 256, 128, 64]
+        hidden_dims = [512, 256, 128, 64]
         self.latent_dim = latent_dim
-        self.decoder_input = nn.Linear(latent_dim, 34816)
+        self.decoder_input = nn.Linear(latent_dim, 16384)
         self.convs = nn.ModuleList()
-        in_channels = h_dims[0]
-        #Very unsatisfactory way of matchign dimensions in encoder :/
-        self.convs.append( 
-            ConvLayer(
-                in_channels,
-                h_dims[0],
-                (5,5),
-                (1,2),
-                padding=(0,2),
-                activation_function="ReLU",transpose=True) )
-        self.convs.append( 
-            ConvLayer(
-                in_channels,
-                h_dims[1],
-                (3,5),
-                (2,2),
-                padding=(0,2),
-                activation_function="ReLU",transpose=True) )
-        self.convs.append( 
-            ConvLayer(
-                h_dims[1],
-                h_dims[2],
-                (4,5),
-                (2,2),
-                padding=(2,2),
-                activation_function="ReLU",transpose=True) )
-        self.convs.append( 
-            ConvLayer(
-                h_dims[2],
-                h_dims[3],
-                (4,5),
-                (2,2),
-                padding=(1,2),
-                activation_function="ReLU",transpose=True) )
-        self.final_layer = ConvLayer(h_dims[3], 1, (4,5), (2,2), padding=(1,2), activation_function="Tanh",transpose=True) 
+        in_channels = hidden_dims[0]
+
+        for h_dim in hidden_dims:
+            self.convs.append(
+                ConvLayer(in_channels,h_dim,(4,4),(2,2),padding=(1,1), activation_function="ReLU",transpose=True) 
+            )
+            in_channels = h_dim
+
+        self.final_layer = ConvLayer(hidden_dims[3], 1, (4,4), (2,2), padding=(1,1), activation_function="Tanh",transpose=True) 
 
     def forward(self, input):
         x = self.decoder_input(input)
-        x = torch.reshape(x, (input.shape[0],512,4,17))
+        x = torch.reshape(x, (input.shape[0],512,4,8))
+        print(x.shape)
         for conv in self.convs:
             x = conv(x)
+            print(x.shape)
         x = self.final_layer(x)
+        print(x.shape)
         return x
 
 class ConvLayer(nn.Module):

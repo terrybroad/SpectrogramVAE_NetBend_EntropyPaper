@@ -34,13 +34,11 @@ IEEE/ACM Transactions on Audio, Speech, and Language Processing 23, no. 1 (2014)
 
 #ORIGINAL CODE FROM https://github.com/yoyololicon/spectrogram-inversion
 
-# melobj = MelScale(n_mels=hop, sample_rate=sr, f_min=0.)
-# melfunc = melobj.forward
 
-# def melspecfunc(waveform):
-#   specgram = specfunc(waveform)
-#   mel_specgram = melfunc(specgram)
-#   return mel_specgram
+def melspecfunc(waveform, specfunc, melfunc):
+  specgram = specfunc(waveform)
+  mel_specgram = melfunc(specgram)
+  return mel_specgram
 
 def spectral_convergence(input, target):
     return 20 * ((input - target).norm().log10() - target.norm().log10())
@@ -91,8 +89,8 @@ def normalize(S, args):
 def denormalize(S, args):
   return (((np.clip(S, -1, 1)+1.)/2.) * -args.min_db) + args.min_db
 
-def prep(wv, args, specfunc):
-  S = np.array(torch.squeeze(specfunc(torch.Tensor(wv).view(1,-1))).detach().cpu())
+def prep(wv, args, specfunc, melobj, melspecfunc):
+  S = np.array(torch.squeeze(melspecfunc(torch.Tensor(wv).view(1,-1), specfunc, melobj)).detach().cpu())
   S = librosa.power_to_db(S)-args.ref_db
   return normalize(S, args)
 
@@ -105,11 +103,11 @@ def deprep(S, args, specfunc):
 #---------Helper functions------------#
 
 #Generate spectrograms from waveform array
-def tospec(data, args, specfunc):
+def tospec(data, args, specfunc, melobj, melspecfunc):
   specs=np.empty(data.shape[0], dtype=object)
   for i in range(data.shape[0]):
     x = data[i]
-    S=prep(x, args, specfunc)
+    S=prep(x, args, specfunc, melobj, melspecfunc)
     S = np.array(S, dtype=np.float32)
     specs[i]=np.expand_dims(S, -1)
   print(specs.shape)
@@ -216,7 +214,7 @@ if __name__ == "__main__":
     parser.add_argument('--ckpt', type=str, default="")
     parser.add_argument('--data', type=str, default="/home/terence/Music/bach_wavs")
     parser.add_argument('--run_name', type=str, default="test")
-    parser.add_argument('--save_dir', type=str, default="ckpt/")
+    parser.add_argument('--save_dir', type=str, default="ckpt")
     args = parser.parse_args()
 
     encoder = Encoder(args.vector_dim)
@@ -236,10 +234,13 @@ if __name__ == "__main__":
     specobj = Spectrogram(n_fft=4*args.hop, win_length=4*args.hop, hop_length=args.hop, pad=0, power=2, normalized=False)
     specfunc = specobj.forward
 
+    melobj = MelScale(n_mels=args.hop, sample_rate=args.sr, f_min=0.)
+    melfunc = melobj.forward
+
     #AUDIO TO CONVERT
     awv = audio_array(args.data)         #get waveform array from folder containing wav files
     print(awv)
-    aspec = tospec(awv, args, specfunc)                        #get spectrogram array
+    aspec = tospec(awv, args, specfunc, melobj, melspecfunc)                        #get spectrogram array
     adata = splitcut(aspec, args)                    #split spectrogams to fixed
     print(np.shape(adata))
 
@@ -251,6 +252,7 @@ if __name__ == "__main__":
 
             batch = adata[np.random.randint(adata.shape[0], size=args.batch), :]
             x = torch.tensor(batch).to('cuda').transpose(1,3)
+            z, kld = encoder(x)
             _x = decoder(z)
 
             recon_loss = criterion(x, _x)
@@ -285,5 +287,5 @@ if __name__ == "__main__":
                   "e_optim": e_optim.state_dict(),
                   "d_optim": d_optim.state_dict()
                 }, 
-                'checkpoint'+args.save_dir+'/'+str(i)+'.pt')    
+                args.save_dir+'/checkpoint_'+str(i)+'.pt')    
 
