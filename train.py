@@ -279,7 +279,7 @@ if __name__ == "__main__":
                 normalize=True,
                 range=(-1, 1))
 
-            if i % 1000 == 0:
+            if i % 10000 == 0:
               torch.save(
                 {
                   "encoder": encoder.state_dict(),

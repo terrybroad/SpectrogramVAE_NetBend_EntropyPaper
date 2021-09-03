@@ -47,12 +47,9 @@ class Encoder(nn.Module):
 
     def encode(self, input):
         x = input
-        print(x.shape)
         for conv in self.convs:
             x = conv(x)
-            print(x.shape)
         out = torch.flatten(x,start_dim=1)
-        print(out.shape)
         out = self.fc(out)
         return out, out
 
@@ -85,12 +82,9 @@ class Decoder(nn.Module):
     def forward(self, input):
         x = self.decoder_input(input)
         x = torch.reshape(x, (input.shape[0],512,4,8))
-        print(x.shape)
         for conv in self.convs:
             x = conv(x)
-            print(x.shape)
         x = self.final_layer(x)
-        print(x.shape)
         return x
 
 class ConvLayer(nn.Module):
