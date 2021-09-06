@@ -138,9 +138,13 @@ def tospeclong(path, length=4*44100):
   print(specs.shape)
   return specs
 
-#Waveform array from path of folder containing wav files
+#Waveform array from path of folder containing audio files
 def audio_array(path):
-  ls = glob(f'{path}/*.wav')
+  ls = glob(f'{path}/**/*.wav', recursive=True)
+  ls = ls + glob(f'{path}/**/*.ogg', recursive=True)
+  ls = ls + glob(f'{path}/**/*.mp3', recursive=True)
+  ls = ls + glob(f'{path}/**/*.aac', recursive=True)
+  ls = ls + glob(f'{path}/**/*.flac', recursive=True)
   adata = []
   for i in range(len(ls)):
     print(ls[i])
@@ -195,7 +199,7 @@ if __name__ == "__main__":
     parser.add_argument('--batch', type=int, default=64)
     parser.add_argument('--vector_dim', type=int, default=128)
     parser.add_argument('--maxiter', type=int, default=100001)
-    parser.add_argument('--hop', type=int, default=256)
+    parser.add_argument('--hop', type=int, default=512)
     parser.add_argument('--sr', type=int, default=44100)
     parser.add_argument('--min_db', type=int, default=-100)
     parser.add_argument('--ref_db', type=int, default=20)

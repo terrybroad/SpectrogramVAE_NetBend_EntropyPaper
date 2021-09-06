@@ -26,7 +26,7 @@ class Encoder(nn.Module):
         super().__init__()
         self.latent_dim = latent_dim
         self.convs = nn.ModuleList()
-        self.fc = nn.Linear(34816, self.latent_dim)
+        self.fc = nn.Linear(67584, self.latent_dim)
         
         hidden_dims = [64, 128, 256, 512, 512]
 
@@ -49,9 +49,9 @@ class Encoder(nn.Module):
         x = input
         for conv in self.convs:
             x = conv(x)
-        out = torch.flatten(x,start_dim=1)
-        out = self.fc(out)
-        return out, out
+        x = torch.flatten(x,start_dim=1)
+        x = self.fc(x)
+        return x, x
 
     def forward(self, input):
         mu, logvar = self.encode(input)
@@ -67,10 +67,10 @@ class Decoder(nn.Module):
         super().__init__()
         h_dims = [512, 256, 128, 64]
         self.latent_dim = latent_dim
-        self.decoder_input = nn.Linear(latent_dim, 34816)
+        self.decoder_input = nn.Linear(latent_dim, 67584)
         self.convs = nn.ModuleList()
         in_channels = h_dims[0]
-        #Very unsatisfactory way of matchign dimensions in encoder :/
+        #Very unsatisfactory way of matching dimensions in encoder :/
         self.convs.append( 
             ConvLayer(
                 in_channels,
@@ -107,7 +107,7 @@ class Decoder(nn.Module):
 
     def forward(self, input):
         x = self.decoder_input(input)
-        x = torch.reshape(x, (input.shape[0],512,4,17))
+        x = torch.reshape(x, (input.shape[0],512,4,33))
         for conv in self.convs:
             x = conv(x)
         x = self.final_layer(x)
