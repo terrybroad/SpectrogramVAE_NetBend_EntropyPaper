@@ -185,17 +185,6 @@ def splitcut(data,args):
       ls.append(x[:,-minifinal:,:])
   return np.array(ls)
 
-# def save_spec_as_image(spectrogram, out_path):
-
-#     # spec = numpy.log(spectrogram + 1e-9) # add small number to avoid log(0)
-#     spec = Spectrogram.to('cpu').to.numpy()
-#     # min-max scale to fit inside 8-bit range
-#     img = scale_minmax(spec, 0, 255).astype(numpy.uint8)
-#     img = numpy.flip(img, axis=1) # put low frequencies at the bottom in image
-#     img = 255-img # invert. make black==more energy
-#     # save as PNG
-#     skimage.io.imsave(out_path, img)
-
 
 if __name__ == "__main__":
     device = 'cuda'

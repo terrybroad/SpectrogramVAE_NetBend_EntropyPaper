@@ -1,40 +1,34 @@
 import os
-
-os.environ['TF_XLA_FLAGS'] = '--tf_xla_enable_xla_devices'
-
-from glob import glob
+import math
+import heapq
+import torch
+import argparse
+import torchaudio
 import librosa
 import librosa.display
+import torch.nn as nn
+import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import numpy as np
+import soundfile as sf
+
 from numpy import asarray
 from numpy.random import randn
 from numpy.random import randint
 from numpy import linspace
-import soundfile as sf
-from torchvision import utils 
-import torchaudio
-
+from glob import glob
+from torchvision import utils
+from torch import autograd, optim
+from tqdm import tqdm
+from functools import partial
+from torchaudio.transforms import MelScale, Spectrogram
+from model import Encoder, Decoder
 from perlin_numpy import (
     generate_fractal_noise_2d, generate_fractal_noise_3d,
     generate_perlin_noise_2d, generate_perlin_noise_3d
 )
 
-#Hyperparameters
-LEARNING_RATE = 0.0005
-EPOCHS =  40
-BATCH_SIZE  = 64 
-VECTOR_DIM = 128
-
-hop=256               #hop size (window size = 4*hop)
-sr=44100              #sampling rate
-min_level_db=-100     #reference values to normalize data
-ref_level_db=20
-
-shape=128           #length of time axis of split specrograms
-spec_split=1
-
-maxiter=100000
+torch.set_default_tensor_type('torch.cuda.FloatTensor')
 
 #Waveform to Spectrogram conversion
 
@@ -44,36 +38,13 @@ IEEE/ACM Transactions on Audio, Speech, and Language Processing 23, no. 1 (2014)
 
 #ORIGINAL CODE FROM https://github.com/yoyololicon/spectrogram-inversion
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch import autograd, optim
-from tqdm import tqdm
-from functools import partial
-import math
-import heapq
-from torchaudio.transforms import MelScale, Spectrogram
-from model import Encoder, Decoder
-
-torch.set_default_tensor_type('torch.cuda.FloatTensor')
-
-specobj = Spectrogram(n_fft=4*hop, win_length=4*hop, hop_length=hop, pad=0, power=2, normalized=False)
-specfunc = specobj.forward
-# melobj = MelScale(n_mels=hop, sample_rate=sr, f_min=0.)
-# melfunc = melobj.forward
-
-# def melspecfunc(waveform):
-#   specgram = specfunc(waveform)
-#   mel_specgram = melfunc(specgram)
-#   return mel_specgram
-
 def spectral_convergence(input, target):
     return 20 * ((input - target).norm().log10() - target.norm().log10())
 
-def GRAD(spec, transform_fn, samples=None, init_x0=None, maxiter=1000, tol=1e-6, verbose=1, evaiter=10, lr=0.002):
+def GRAD(spec, args, transform_fn, samples=None, init_x0=None, maxiter=1000, tol=1e-6, verbose=1, evaiter=10, lr=0.002):
 
     spec = torch.Tensor(spec)
-    samples = (spec.shape[-1]*hop)-hop
+    samples = (spec.shape[-1]*args.hop)-args.hop
 
     if init_x0 is None:
         init_x0 = spec.new_empty((1,samples)).normal_(std=1e-6)
@@ -93,8 +64,6 @@ def GRAD(spec, transform_fn, samples=None, init_x0=None, maxiter=1000, tol=1e-6,
         for i in range(maxiter):
             optimizer.zero_grad()
             V = transform_fn(x)
-            print(V.shape)
-            print(T.shape)
             loss = criterion(V, T)
             loss.backward()
             optimizer.step()
@@ -112,31 +81,31 @@ def GRAD(spec, transform_fn, samples=None, init_x0=None, maxiter=1000, tol=1e-6,
 
     return x.detach().view(-1).cpu()
 
-def normalize(S):
-  return np.clip((((S - min_level_db) / -min_level_db)*2.)-1., -1, 1)
+def normalize(S, args):
+  return np.clip((((S - args.min_db) / -args.min_db)*2.)-1., -1, 1)
 
-def denormalize(S):
-  return (((np.clip(S, -1, 1)+1.)/2.) * -min_level_db) + min_level_db
+def denormalize(S, args):
+  return (((np.clip(S, -1, 1)+1.)/2.) * -args.min_db) + args.min_db
 
-def prep(wv,hop=192):
+def prep(wv, args, specfunc):
   S = np.array(torch.squeeze(specfunc(torch.Tensor(wv).view(1,-1))).detach().cpu())
-  S = librosa.power_to_db(S)-ref_level_db
-  return normalize(S)
+  S = librosa.power_to_db(S)-args.ref_db
+  return normalize(S, args)
 
-def deprep(S):
-  S = denormalize(S)+ref_level_db
+def deprep(S, args, specfunc):
+  S = denormalize(S,args)+args.ref_db
   S = librosa.db_to_power(S)
-  wv = GRAD(np.expand_dims(S,0), specfunc, maxiter=2500, evaiter=10, tol=1e-8)
+  wv = GRAD(np.expand_dims(S,0), args, specfunc, maxiter=2500, evaiter=10, tol=1e-8)
   return np.array(np.squeeze(wv))
 
 #---------Helper functions------------#
 
 #Generate spectrograms from waveform array
-def tospec(data):
+def tospec(data, args, specfunc):
   specs=np.empty(data.shape[0], dtype=object)
   for i in range(data.shape[0]):
     x = data[i]
-    S=prep(x)
+    S=prep(x, args, specfunc)
     S = np.array(S, dtype=np.float32)
     specs[i]=np.expand_dims(S, -1)
   print(specs.shape)
@@ -167,7 +136,7 @@ def tospeclong(path, length=4*44100):
 
 #Waveform array from path of folder containing wav files
 def audio_array(path):
-  ls = glob(f'{path}/*.wav')
+  ls = sorted(glob(f'{path}/*.wav'))
   adata = []
   for i in range(len(ls)):
     print(ls[i])
@@ -193,55 +162,24 @@ def testass(a):
   return np.squeeze(con)
 
 #Split spectrograms in chunks with equal size
-def splitcut(data):
+def splitcut(data,args):
   ls = []
   mini = 0
-  minifinal = spec_split*shape   #max spectrogram length
+  minifinal = args.spec_split*args.shape   #max spectrogram length
   for i in range(data.shape[0]-1):
     if data[i].shape[1]<=data[i+1].shape[1]:
       mini = data[i].shape[1]
     else:
       mini = data[i+1].shape[1]
-    if mini>=3*shape and mini<minifinal:
+    if mini>=3*args.shape and mini<minifinal:
       minifinal = mini
   for i in range(data.shape[0]):
     x = data[i]
-    if x.shape[1]>=3*shape:
+    if x.shape[1]>=3*args.shape:
       for n in range(x.shape[1]//minifinal):
         ls.append(x[:,n*minifinal:n*minifinal+minifinal,:])
       ls.append(x[:,-minifinal:,:])
   return np.array(ls)
-
-
-"""## Training"""
-
-#Import folder containing .wav files for training
-#Generating Mel-Spectrogram dataset (Uncomment where needed)
-#adata: source spectrograms
-
-audio_directory = "/home/terence/Music/bach_wavs"
-
-#AUDIO TO CONVERT
-awv = audio_array(audio_directory)         #get waveform array from folder containing wav files
-aspec = tospec(awv)                        #get spectrogram array
-adata = splitcut(aspec)                    #split spectrogams to fixed
-print(np.shape(adata))
-
-#Start training from scratch or resume training
-
-training_run_name = "aerofonos_test_train" 
-checkpoint_save_directory = ""
-resume_training = False 
-resume_training_checkpoint_path = "" 
-# current_time = get_time_stamp()
-
-encoder = Encoder(128)
-decoder = Decoder(128)
-
-
-"""## Generation"""
-d_state_dict = torch.load('/home/terence/repos/SpectrogramVAE/bach/checkpoint99000.pt')['decoder']
-decoder.load_state_dict(d_state_dict)
 
 
 #-----TESTING FUNCTIONS ----------- #
@@ -281,20 +219,20 @@ def plot_spec_encoded_in_latent_space(latent_representations, sample_labels):
 
 #---------------NOISE GENERATOR FUNCTIONS ------------#
 
-def generate_random_z_vect(seed=1001,size_z=1,scale=1.0):
+def generate_random_z_vect(seed=1001,size_z=1,scale=1,vector_dim=128):
     np.random.seed(seed)
-    x = np.random.uniform(low=(scale * -1.0), high=scale, size=(size_z,VECTOR_DIM))
+    x = np.random.uniform(low=(scale * -1.0), high=scale, size=(size_z,vector_dim))
     return x
 
-def generate_z_vect_from_perlin_noise(seed=1001, size_z=1, scale=1.0):
+def generate_z_vect_from_perlin_noise(seed=1001, size_z=1, scale=1.0,vector_dim=128):
     np.random.seed(seed)
-    x = generate_perlin_noise_2d((size_z, VECTOR_DIM), (1,1))
+    x = generate_perlin_noise_2d((size_z, vector_dim), (1,1))
     x = x*scale
     return x
 
-def generate_z_vect_from_fractal_noise(seed=1001, size_z=1, scale=1.0,):
+def generate_z_vect_from_fractal_noise(seed=1001, size_z=1, scale=1.0,vector_dim=128):
     np.random.seed(seed)
-    x = generate_fractal_noise_2d((size_z, VECTOR_DIM), (1,1),)
+    x = generate_fractal_noise_2d((size_z, vector_dim), (1,1),)
     x = x*scale
     return x
 
@@ -302,7 +240,7 @@ def generate_z_vect_from_fractal_noise(seed=1001, size_z=1, scale=1.0,):
 #-------SPECTROGRAM AND SOUND SYNTHESIS UTILITY FUNCTIONS -------- #
 
 #Assembling generated Spectrogram chunks into final Spectrogram
-def specass(a,spec):
+def specass(a,spec, shape):
   but=False
   con = np.array([])
   nim = a.shape[0]
@@ -320,7 +258,7 @@ def specass(a,spec):
   return np.squeeze(con)
 
 #Splitting input spectrogram into different chunks to feed to the generator
-def chopspec(spec):
+def chopspec(spec, shape):
   dsa=[]
   for i in range(spec.shape[1]//shape):
     im = spec[:,i*shape:i*shape+shape]
@@ -332,22 +270,22 @@ def chopspec(spec):
   return np.array(dsa, dtype=np.float32)
 
 #Converting from source Spectrogram to target Spectrogram
-def towave_reconstruct(spec, spec1, name, path='../content/', show=False, save=False):
-  specarr = chopspec(spec)
-  specarr1 = chopspec(spec1)
+def towave_reconstruct(spec, spec1, args, specfunc, name, path='../content/', show=False, save=False):
+  specarr = chopspec(spec, args.shape)
+  specarr1 = chopspec(spec1, args.shape)
   print(specarr.shape)
   a = specarr
   print('Generating...')
   ab = specarr1
   print('Assembling and Converting...')
-  a = specass(a,spec)
-  ab = specass(ab,spec1)
-  awv = deprep(a)
-  abwv = deprep(ab)
+  a = specass(a,spec,args.shape)
+  ab = specass(ab,spec1,args.shape)
+  awv = deprep(a,args,specfunc)
+  abwv = deprep(ab,args,specfunc)
   if save:
     print('Saving...')
     pathfin = f'{path}/{name}'
-    sf.write(f'{pathfin}.wav', awv, sr)
+    sf.write(f'{pathfin}.wav', awv, args.sr)
     print('Saved WAV!')
   if show:
     fig, axs = plt.subplots(ncols=2)
@@ -361,18 +299,18 @@ def towave_reconstruct(spec, spec1, name, path='../content/', show=False, save=F
   return abwv
 
 #Converting from Z vector generated spectrogram to waveform
-def towave_from_z(spec, name, path='../content/', show=False, save=False):
-  specarr = chopspec(spec)
+def towave_from_z(spec, args, specfunc, name, path='../content/', show=False, save=False):
+  specarr = chopspec(spec, args.shape)
   print(specarr.shape)
   a = specarr
   print('Generating...')
   print('Assembling and Converting...')
-  a = specass(a,spec)
-  awv = deprep(a)
+  a = specass(a,spec,args.shape)
+  awv = deprep(a,args,specfunc)
   if save:
     print('Saving...')
     pathfin = f'{path}/{name}'
-    sf.write(f'{pathfin}.wav', awv, sr)
+    sf.write(f'{pathfin}.wav', awv, args.sr)
     print('Saved WAV!')
   if show:
     fig, axs = plt.subplots(ncols=1)
@@ -383,7 +321,7 @@ def towave_from_z(spec, name, path='../content/', show=False, save=False):
   return awv
 
 #Generate one-shot samples from latent space with random or manual seed
-def one_shot_gen(num_samples=1, use_seed=False, seed=1001, z_scale=-2.2, save=True, name="one_shot", path="/home/terence/repos/SpectrogramVAE/sample"):
+def one_shot_gen(decoder, args, specfunc,  num_samples=1, use_seed=False, seed=1001, z_scale=-2.2, save=True, name="one_shot", path="/home/terence/repos/SpectrogramVAE/sample"):
     num_samples_to_generate =   num_samples
     _use_seed = use_seed
     _seed = seed
@@ -400,7 +338,7 @@ def one_shot_gen(num_samples=1, use_seed=False, seed=1001, z_scale=-2.2, save=Tr
       else:
         z = generate_random_z_vect(_seed, num_samples_to_generate,scale=scale_z_vectors)
       z_sample = np.array(vae.sample_from_latent_space(z))
-      towave_from_z(z_sample[i], name=f'{audio_name}_{i}',path=audio_save_directory,show=False, save=save_audio)
+      towave_from_z(z_sample[i], args, specfunc, name=f'{audio_name}_{i}',path=audio_save_directory,show=False, save=save_audio)
       i+=1
 
     if not _use_seed:
@@ -409,7 +347,7 @@ def one_shot_gen(num_samples=1, use_seed=False, seed=1001, z_scale=-2.2, save=Tr
       print("Generated from seed:", _seed)
 
 #Generate arbitrary long audio from latent space with random or custom seed using uniform, Perlin or fractal noise
-def noise_gen(num_samples=1, _noise_type="fractal", _use_seed=False, _seed=1001, z_scale=2.5, save=False, name="noise_generation", path="/home/terence/repos/SpectrogramVAE/sample"):
+def noise_gen(decoder, args, specfunc, num_samples=1, _noise_type="fractal", _use_seed=False, _seed=1001, z_scale=2.5, save=False, name="noise_generation", path="/home/terence/repos/SpectrogramVAE/sample"):
     num_seeds_to_generate = num_samples
     noise_type = _noise_type #params are ["uniform", "perlin", "fractal"]
     use_seed = _use_seed
@@ -423,18 +361,18 @@ def noise_gen(num_samples=1, _noise_type="fractal", _use_seed=False, _seed=1001,
     y = np.random.randint(0, 2**32-1)                         # generated random int to pass and convert into vector
     if not use_seed:
       if noise_type == "uniform":
-        z = generate_random_z_vect(y, num_seeds_to_generate,scale_z_vectors)            # vectors to input into latent space
+        z = generate_random_z_vect(y, num_seeds_to_generate,scale_z_vectors,args.vector_dim)            # vectors to input into latent space
       if noise_type == "perlin":
-        z = generate_z_vect_from_perlin_noise(y, num_seeds_to_generate,scale_z_vectors)            # vectors to input into latent space
+        z = generate_z_vect_from_perlin_noise(y, num_seeds_to_generate,scale_z_vectors,args.vector_dim)            # vectors to input into latent space
       if noise_type == "fractal":
-        z = generate_z_vect_from_fractal_noise(y, num_seeds_to_generate,scale_z_vectors)            # vectors to input into latent space
+        z = generate_z_vect_from_fractal_noise(y, num_seeds_to_generate,scale_z_vectors,args.vector_dim)            # vectors to input into latent space
     if use_seed:
       if noise_type == "uniform":
-        z = generate_random_z_vect(seed, num_seeds_to_generate,scale_z_vectors)            # vectors to input into latent space
+        z = generate_random_z_vect(seed, num_seeds_to_generate,scale_z_vectors,args.vector_dim)            # vectors to input into latent space
       if noise_type == "perlin":
-        z = generate_z_vect_from_perlin_noise(seed, num_seeds_to_generate,scale_z_vectors)            # vectors to input into latent space
+        z = generate_z_vect_from_perlin_noise(seed, num_seeds_to_generate,scale_z_vectors,args.vector_dim)            # vectors to input into latent space
       if noise_type == "fractal":
-        z = generate_z_vect_from_fractal_noise(seed, num_seeds_to_generate,scale_z_vectors)            # vectors to input into latent space
+        z = generate_z_vect_from_fractal_noise(seed, num_seeds_to_generate,scale_z_vectors,args.vector_dim)            # vectors to input into latent space
     z = torch.tensor(z, dtype=torch.float32).to('cuda')
     gen = decoder(z)
     utils.save_image(gen, f'interp/random_noise_output.png',
@@ -444,7 +382,7 @@ def noise_gen(num_samples=1, _noise_type="fractal", _use_seed=False, _seed=1001,
     z_sample = gen.transpose(1,3).cpu().detach().numpy()
     # z_sample = np.array(vae.sample_from_latent_space(z))
     assembled_spec = testass(z_sample)
-    towave_from_z(assembled_spec,audio_name,audio_save_directory,show=False,save=save_audio)
+    towave_from_z(assembled_spec,args,specfunc,audio_name,audio_save_directory,show=False,save=save_audio)
 
     if not use_seed:
       print("Generated from seed:", y)
@@ -452,7 +390,7 @@ def noise_gen(num_samples=1, _noise_type="fractal", _use_seed=False, _seed=1001,
       print("Generated from seed:", seed)
 
 #Interpolate between two seeds for n-amount of steps
-def interp_gen(num_samples=1, _use_seed=False, _seed=1001, interp_steps=5, z_scale=-2.2, interp_scale=1.2, save=False, name="one_shot", path="/content/"):
+def interp_gen(decoder, args, specfunc, num_samples=1, _use_seed=False, _seed=1001, interp_steps=5, z_scale=-2.2, interp_scale=1.2, save=False, name="one_shot", path="/content/"):
     use_seed = _use_seed #@param {type:"boolean"}
     seed =  _seed #@param {type:"slider", min:0, max:4294967295, step:1}
     num_interpolation_steps = interp_steps#@param {type:"integer"}
@@ -483,9 +421,9 @@ def interp_gen(num_samples=1, _use_seed=False, _seed=1001, interp_steps=5, z_sca
 
     y = np.random.randint(0, 2**32-1)
     if not use_seed:
-      pts = generate_random_z_vect(y,num_samples,scale_z_vectors)
+      pts = generate_random_z_vect(y,num_samples,scale_z_vectors, args.vector_dim)
     else:
-      pts = generate_random_z_vect(seed,num_samples,scale_z_vectors)
+      pts = generate_random_z_vect(seed,num_samples,scale_z_vectors,args.vector_dim)
 
     # interpolate points in latent space
     interpolated = interpolate_points(pts[0], pts[1], scale_interpolation_ratio, num_interpolation_steps)
@@ -498,7 +436,7 @@ def interp_gen(num_samples=1, _use_seed=False, _seed=1001, interp_steps=5, z_sca
       range=(-1, 1))
     interp = interp.transpose(1,3).cpu().detach().numpy()
     assembled_spec = testass(interp)
-    towave_from_z(assembled_spec,audio_name,audio_save_directory,show=False, save=save_audio)
+    towave_from_z(assembled_spec,args,specfunc,audio_name,audio_save_directory,show=False, save=save_audio)
     #print(np.shape(assembled_spec))
 
     if not use_seed:
@@ -506,7 +444,79 @@ def interp_gen(num_samples=1, _use_seed=False, _seed=1001, interp_steps=5, z_sca
     else:
       print("Generated from seed:", seed)
 
+def reconstruct_gen(encoder, decoder, args, specfunc, data, path="generated"):
+  num_batches = np.ceil(len(data) / args.batch)
+  batch_idxs = np.array_split(range(len(data)), num_batches)
+  wavs = []
+  i = 0
+  for batch_idx in batch_idxs:
+
+    batch = data[batch_idx,:]
+    x = torch.tensor(batch).to('cuda').transpose(1,3)
+    z, kld, mu = encoder(x)
+    _x = decoder(mu)    
+    recon_np = _x.transpose(1,3).cpu().detach().numpy()
+    spec = testass(recon_np)
+    print(spec)
+    # if i == 0:
+    #   assembled_spec = spec
+    # else:
+    #   assembled_spec = np.concatenate(assembled_spec,spec)
+    wav = towave_from_z(np.array(spec),args,specfunc,args.output_name,path,show=False, save=False)
+    # print("SHAPE: " + str(wav.shape))
+    wavs.append(wav)
+  final_wav = np.concatenate(wavs)
+  pathfin = f'{path}/{args.output_name}'
+  sf.write(f'{pathfin}.wav', final_wav, args.sr)
+  
+
+
 if __name__ == "__main__":
-    #one_shot_gen(num_samples=10, name="amazondotcom_test")
-    # noise_gen(num_samples=64,_use_seed=False,_noise_type="perlin", z_scale=2.5, name="uniform_test2s", save=True)
-    interp_gen(num_samples=10, _use_seed=False, _seed=1001, interp_steps=64, z_scale=-1.5, interp_scale=1.0, save=True, name="interp_test2", path="/home/terence/repos/SpectrogramVAE/sample")
+    device = 'cuda'
+
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument('--lr', type=float, default=0.0003)
+    parser.add_argument('--batch', type=int, default=64)
+    parser.add_argument('--vector_dim', type=int, default=128)
+    parser.add_argument('--maxiter', type=int, default=100001)
+    parser.add_argument('--hop', type=int, default=256)
+    parser.add_argument('--sr', type=int, default=44100)
+    parser.add_argument('--min_db', type=int, default=-100)
+    parser.add_argument('--ref_db', type=int, default=20)
+    parser.add_argument('--spec_split', type=int, default=1)
+    parser.add_argument('--shape', type=int, default=128)
+    parser.add_argument('--beta', type=int, default=0.001)
+    parser.add_argument('--ckpt', type=str, default="")
+    parser.add_argument('--data', type=str, default="/home/terence/Music/bach_wavs")
+    parser.add_argument('--run_name', type=str, default="test")
+    parser.add_argument('--save_dir', type=str, default="ckpt")
+    parser.add_argument('--output_name', type=str, default="generated_sample")
+    args = parser.parse_args()
+
+    encoder = Encoder(args.vector_dim)
+    decoder = Decoder(args.vector_dim)
+
+    e_optim = optim.Adam(encoder.parameters(), lr=args.lr, betas=(0, 0.99))
+    d_optim = optim.Adam(decoder.parameters(), lr=args.lr, betas=(0, 0.99))
+    criterion = nn.MSELoss()
+
+    if args.ckpt != "":
+      state_dict = torch.load(args.ckpt)
+      encoder.load_state_dict(state_dict['encoder'])
+      decoder.load_state_dict(state_dict['decoder'])
+      e_optim.load_state_dict(state_dict['e_optim'])
+      d_optim.load_state_dict(state_dict['d_optim'])
+
+    specobj = Spectrogram(n_fft=4*args.hop, win_length=4*args.hop, hop_length=args.hop, pad=0, power=2, normalized=False)
+    specfunc = specobj.forward
+
+    #AUDIO TO CONVERT
+    awv = audio_array(args.data)         #get waveform array from folder containing wav files
+    print(awv)
+    aspec = tospec(awv, args, specfunc)                        #get spectrogram array
+    adata = splitcut(aspec, args)    
+    #one_shot_gen(decoder, args, specfunc, num_samples=10, name="amazondotcom_test")
+    # noise_gen(decoder, args, specfunc, num_samples=64,_use_seed=False,_noise_type="perlin", z_scale=2.5, name="uniform_test2s", save=True)
+    # interp_gen(decoder, args, specfunc, num_samples=10, _use_seed=False, _seed=1001, interp_steps=64, z_scale=-1.5, interp_scale=5.0, save=True, name="interp_test2", path="/home/terence/repos/SpectrogramVAE/sample")
+    reconstruct_gen(encoder, decoder, args, specfunc, adata, path="/home/terence/repos/SpectrogramVAE/generated")
