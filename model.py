@@ -26,7 +26,7 @@ class Encoder(nn.Module):
         super().__init__()
         self.latent_dim = latent_dim
         self.convs = nn.ModuleList()
-        self.fc = nn.Linear(67584, self.latent_dim)
+        self.fc = nn.Linear(34816, self.latent_dim)
         
         hidden_dims = [64, 128, 256, 512, 512]
 
@@ -43,7 +43,7 @@ class Encoder(nn.Module):
         return mu + eps*std
 
     def kl_divergence(self, mu, logvar):
-        return  torch.mean((-0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())) / self.latent_dim)
+        return  torch.mean((-0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())) / self.latent_dim )
 
     def encode(self, input):
         x = input
@@ -57,7 +57,7 @@ class Encoder(nn.Module):
         mu, logvar = self.encode(input)
         kld = self.kl_divergence(mu, logvar)
         z = self.reparameterisation(mu, logvar)
-        return z, kld
+        return z, kld, mu
 
 class Decoder(nn.Module):
     def __init__(
@@ -67,7 +67,7 @@ class Decoder(nn.Module):
         super().__init__()
         h_dims = [512, 256, 128, 64]
         self.latent_dim = latent_dim
-        self.decoder_input = nn.Linear(latent_dim, 67584)
+        self.decoder_input = nn.Linear(latent_dim, 34816) # 67584 for
         self.convs = nn.ModuleList()
         in_channels = h_dims[0]
         #Very unsatisfactory way of matching dimensions in encoder :/
@@ -107,7 +107,7 @@ class Decoder(nn.Module):
 
     def forward(self, input):
         x = self.decoder_input(input)
-        x = torch.reshape(x, (input.shape[0],512,4,33))
+        x = torch.reshape(x, (input.shape[0],512,4,17)) #512,4,33 for 512 hop
         for conv in self.convs:
             x = conv(x)
         x = self.final_layer(x)
