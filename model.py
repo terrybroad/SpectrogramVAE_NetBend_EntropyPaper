@@ -3,6 +3,7 @@ import math
 from torch import nn
 from torch.nn import functional as F
 from torch.autograd import Function
+from transform_layers import *
 from functools import reduce
 from operator import __add__
 
@@ -78,7 +79,9 @@ class Decoder(nn.Module):
                 (5,5),
                 (1,2),
                 padding=(0,2),
-                activation_function="ReLU",transpose=True) )
+                activation_function="ReLU",
+                transpose=True,
+                layerID=1) )
         self.convs.append( 
             ConvLayer(
                 in_channels,
@@ -86,7 +89,9 @@ class Decoder(nn.Module):
                 (3,5),
                 (2,2),
                 padding=(0,2),
-                activation_function="ReLU",transpose=True) )
+                activation_function="ReLU",
+                transpose=True,
+                layerID=2) )
         self.convs.append( 
             ConvLayer(
                 h_dims[1],
@@ -94,7 +99,9 @@ class Decoder(nn.Module):
                 (4,5),
                 (2,2),
                 padding=(2,2),
-                activation_function="ReLU",transpose=True) )
+                activation_function="ReLU",
+                transpose=True,
+                layerID=3) )
         self.convs.append( 
             ConvLayer(
                 h_dims[2],
@@ -102,16 +109,23 @@ class Decoder(nn.Module):
                 (4,5),
                 (2,2),
                 padding=(1,2),
-                activation_function="ReLU",transpose=True) )
+                activation_function="ReLU",
+                transpose=True,
+                layerID=4) )
         self.final_layer = ConvLayer(h_dims[3], 1, (4,5), (2,2), padding=(1,2), activation_function="Tanh",transpose=True) 
 
-    def forward(self, input):
+    def forward(self, input, transform_dict_list=[], return_activation_maps=False):
         x = self.decoder_input(input)
+        activation_map_list = []
         x = torch.reshape(x, (input.shape[0],512,4,17)) #512,4,33 for 512 hop
         for conv in self.convs:
-            x = conv(x)
+            x = conv(x, transform_dict_list=transform_dict_list)
+            activation_map_list.append(x)
         x = self.final_layer(x)
-        return x
+        if return_activation_maps:
+            return x, activation_map_list
+        else:
+            return x
 
 class ConvLayer(nn.Module):
     def __init__(
@@ -125,7 +139,8 @@ class ConvLayer(nn.Module):
         output_padding=0,
         bias=True,
         activation_function="ReLU",
-        transpose=False
+        transpose=False,
+        layerID=-1
     ):
         super().__init__()
 
@@ -140,10 +155,12 @@ class ConvLayer(nn.Module):
         self.bias = bias
 
         self.zero_pad_2d = nn.ZeroPad2d((0,0,0,0))
-        ##ADD ANOTHER BATCHNORM FOR INPUT?
+        ##ADD ANOTHER BATCHNORM FOR INPUT? 
         self.batch_norm_1 = nn.BatchNorm2d(in_channel)
         self.batch_norm_2 = nn.BatchNorm2d(out_channel)
-        
+        self.manipulation = ManipulationLayer(layerID)
+        self.transform_dict_list = []
+
         if transpose == False:
             self.zero_pad_2d = nn.ZeroPad2d(reduce(__add__,
                 [(k // 2 + (k - 2 * (k // 2)) - 1, k // 2) for k in self.kernel_size[::-1]]))
@@ -182,8 +199,9 @@ class ConvLayer(nn.Module):
                 self.activation_function
             )
 
-    def forward(self, input):
+    def forward(self, input, transform_dict_list=[]):
         out = self.layer_seq(input)
+        out = self.manipulation(out, transform_dict_list)
         return out
 
 

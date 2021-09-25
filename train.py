@@ -26,7 +26,6 @@ from torch.utils.data import DataLoader
 from model import Encoder, Decoder
 from util import *
 
-torch.set_default_tensor_type('torch.cuda.FloatTensor')
 
 if __name__ == "__main__":
     device = 'cuda'
@@ -36,8 +35,8 @@ if __name__ == "__main__":
     parser.add_argument('--lr', type=float, default=0.0003)
     parser.add_argument('--batch', type=int, default=64)
     parser.add_argument('--vector_dim', type=int, default=128)
-    parser.add_argument('--iter_p_batch', type=int, default=100)
-    parser.add_argument('--tracks_p_batch', type=int, default=10)
+    parser.add_argument('--iter_p_batch', type=int, default=1000)
+    parser.add_argument('--tracks_p_batch', type=int, default=100)
     parser.add_argument('--num_epochs', type=int, default=100)
     parser.add_argument('--hop', type=int, default=256)
     parser.add_argument('--sr', type=int, default=44100)
@@ -60,11 +59,22 @@ if __name__ == "__main__":
     criterion = nn.MSELoss()
 
     if args.ckpt != "":
-      state_dict = torch.load(args.ckpt)
-      encoder.load_state_dict(state_dict['encoder'])
-      decoder.load_state_dict(state_dict['decoder'])
-      e_optim.load_state_dict(state_dict['e_optim'])
-      d_optim.load_state_dict(state_dict['d_optim'])
+      state_dict = torch.load(args.ckpt, map_location='cuda')
+      # state_dict['encoder'].pop('fc.weight',None)
+      # state_dict['encoder'].pop('fc.bias',None)
+      new_state_dict_e = encoder.state_dict()
+      new_state_dict_e.update(state_dict['encoder'])
+      encoder.load_state_dict(new_state_dict_e)
+
+      new_state_dict_d = decoder.state_dict()
+      # state_dict['decoder'].pop('decoder_input.weight',None)
+      # state_dict['decoder'].pop('decoder_input.bias',None)
+      new_state_dict_d.update(state_dict['decoder'])
+      decoder.load_state_dict(new_state_dict_d)
+
+    encoder.to('cuda')
+    decoder.to('cuda')
+
 
     specobj = Spectrogram(n_fft=4*args.hop, win_length=4*args.hop, hop_length=args.hop, pad=0, power=2, normalized=False)
     specfunc = specobj.forward
@@ -93,7 +103,7 @@ if __name__ == "__main__":
               batch = adata[np.random.randint(adata.shape[0], size=args.batch), :]
               
               x = torch.tensor(batch).to('cuda').transpose(1,3)
-              z, kld = encoder(x)
+              z, kld, mu = encoder(x)
               _x = decoder(z)
 
               recon_loss = criterion(x, _x)
@@ -111,15 +121,14 @@ if __name__ == "__main__":
               e_optim.step()
               d_optim.step()
 
-              if it_count % 100 == 0:
-                print("howdy")
+              if it_count % 1000 == 0:
                 utils.save_image(x, f'sample/{str(it_count).zfill(6)}_input.png',
-                  nrow=4,
+                  nrow=8,
                   normalize=True,
                   range=(-1, 1))
                 # save_spec_as_image(x[:,0], f'sample/{str(i).zfill(6)}_skspec.png')
                 utils.save_image(_x, f'sample/{str(it_count).zfill(6)}_output.png',
-                  nrow=4,
+                  nrow=8,
                   normalize=True,
                   range=(-1, 1))
 
@@ -127,9 +136,7 @@ if __name__ == "__main__":
                 torch.save(
                   {
                     "encoder": encoder.state_dict(),
-                    "decoder": decoder.state_dict(),
-                    "e_optim": e_optim.state_dict(),
-                    "d_optim": d_optim.state_dict()
+                    "decoder": decoder.state_dict()
                   }, 
                   args.save_dir+'/checkpoint_'+str(it_count)+'.pt')    
 

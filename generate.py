@@ -1,6 +1,7 @@
 import os
 import math
 import util
+import yaml
 import heapq
 import torch
 import argparse
@@ -25,6 +26,7 @@ from functools import partial
 from torchaudio.transforms import MelScale, Spectrogram
 from model import Encoder, Decoder
 from util import *
+from transform_util import *
 
 torch.set_default_tensor_type('torch.cuda.FloatTensor')
 
@@ -152,20 +154,41 @@ def interp_gen(decoder, args, specfunc, num_samples=1, _use_seed=False, _seed=10
     else:
       print("Generated from seed:", seed)
 
-def reconstruct_gen(encoder, decoder, args, specfunc, data, path="generated"):
+def reconstruct_gen(encoder, decoder, args, specfunc, data, transform_dict_list, path="generated"):
   num_batches = np.ceil(len(data) / args.batch)
   batch_idxs = np.array_split(range(len(data)), num_batches)
   wavs = []
   i = 0
   for batch_idx in batch_idxs:
-
     batch = data[batch_idx,:]
     x = torch.tensor(batch).to('cuda').transpose(1,3)
     z, kld, mu = encoder(x)
-    _x = decoder(mu)    
+    if(args.noise):
+      _x = decoder(z, transform_dict_list)  
+      print("noise")  
+    else:
+      _x = decoder(mu, transform_dict_list)
+      print("no_noise")
     recon_np = _x.transpose(1,3).cpu().detach().numpy()
     spec = testass(recon_np)
+    if not os.path.exists('recon/input'):
+      os.makedirs('recon/input')
+    utils.save_image(
+        x,
+        f'recon/input/{str(i).zfill(6)}.png',
+        nrow=1,
+        normalize=True,
+        range=(-1, 1))
+    if not os.path.exists('recon/output'):
+      os.makedirs('recon/output')
+    utils.save_image(
+        _x,
+        f'recon/output/{str(i).zfill(6)}.png',
+        nrow=1,
+        normalize=True,
+        range=(-1, 1))
     print(spec)
+    i = i+1
     # if i == 0:
     #   assembled_spec = spec
     # else:
@@ -200,6 +223,10 @@ if __name__ == "__main__":
     parser.add_argument('--run_name', type=str, default="test")
     parser.add_argument('--save_dir', type=str, default="ckpt")
     parser.add_argument('--output_name', type=str, default="generated_sample")
+    parser.add_argument('--config', type=str, default="configs/example_transform_config.yaml")
+    parser.add_argument('--clusters', type=str, default="")
+    parser.add_argument('--noise', type=bool, default=False)
+
     args = parser.parse_args()
 
     encoder = Encoder(args.vector_dim)
@@ -209,12 +236,33 @@ if __name__ == "__main__":
     d_optim = optim.Adam(decoder.parameters(), lr=args.lr, betas=(0, 0.99))
     criterion = nn.MSELoss()
 
-    if args.ckpt != "":
-      state_dict = torch.load(args.ckpt)
-      encoder.load_state_dict(state_dict['encoder'])
-      decoder.load_state_dict(state_dict['decoder'])
-      e_optim.load_state_dict(state_dict['e_optim'])
-      d_optim.load_state_dict(state_dict['d_optim'])
+    yaml_config = {}
+    with open(args.config, 'r') as stream:
+        try:
+            yaml_config = yaml.load(stream)
+        except yaml.YAMLError as exc:
+            print(exc)
+    
+    cluster_config = {}
+    if args.clusters != "":
+        with open(args.clusters, 'r') as stream:
+            try:
+                cluster_config = yaml.load(stream)
+            except yaml.YAMLError as exc:
+                print(exc)
+
+    transform_dict_list = create_transforms_dict_list(yaml_config, cluster_config, layer_channel_dims)
+    
+    checkpoint = torch.load(args.ckpt)
+
+    new_state_dict_e = encoder.state_dict()
+    new_state_dict_e.update(checkpoint['encoder'])
+    encoder.load_state_dict(new_state_dict_e)
+
+    new_state_dict_d = decoder.state_dict()
+    new_state_dict_d.update(checkpoint['decoder'])
+    decoder.load_state_dict(new_state_dict_d)
+
 
     specobj = Spectrogram(n_fft=4*args.hop, win_length=4*args.hop, hop_length=args.hop, pad=0, power=2, normalized=False)
     specfunc = specobj.forward
@@ -227,4 +275,4 @@ if __name__ == "__main__":
     #one_shot_gen(decoder, args, specfunc, num_samples=10, name="amazondotcom_test")
     # noise_gen(decoder, args, specfunc, num_samples=64,_use_seed=False,_noise_type="perlin", z_scale=2.5, name="uniform_test2s", save=True)
     # interp_gen(decoder, args, specfunc, num_samples=10, _use_seed=False, _seed=1001, interp_steps=64, z_scale=-1.5, interp_scale=5.0, save=True, name="interp_test2", path="/home/terence/repos/SpectrogramVAE/sample")
-    reconstruct_gen(encoder, decoder, args, specfunc, adata, path="/home/terence/repos/SpectrogramVAE/generated")
+    reconstruct_gen(encoder, decoder, args, specfunc, adata, transform_dict_list, path="/home/terence/repos/SpectrogramVAE/generated")

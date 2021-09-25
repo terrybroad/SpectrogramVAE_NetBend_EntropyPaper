@@ -128,7 +128,80 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
+
+### Output and Cache Directories ###
+/External/
+/Debug/
+/Docs/
+/Release/
+/build/
+/bin/
+/out/
+/cmake-build-*/
+
+### CMake ###
+CMakeCache.txt
+CMakeFiles
+CMakeScripts
+Makefile
+cmake_install.cmake
+install_manifest.txt
+
+### C++ ###
+# Compiled Object files
+*.slo
+*.lo
+*.o
+
+# Comment this line if you want to version Wavefront .obj files.
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Fortran module files
+*.mod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
 #pyTorch
 *.pt
-*.png 
-*.wav 
+
+
+#Media
+*.png
+*.jpg
+*.jpeg
+*.mp4
+*.mov
+*.wav
+*.ogg
+*.mp4
+
+#config
+*.yaml
+
+#model files
+*.pt
+
+#examples
+!configs/example_transform_config.yaml
+
+runs/*
+models/*
+configs/*
