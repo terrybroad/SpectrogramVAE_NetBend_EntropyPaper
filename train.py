@@ -38,7 +38,7 @@ if __name__ == "__main__":
     parser.add_argument('--iter_p_batch', type=int, default=1000)
     parser.add_argument('--tracks_p_batch', type=int, default=100)
     parser.add_argument('--num_epochs', type=int, default=100)
-    parser.add_argument('--hop', type=int, default=256)
+    parser.add_argument('--hop', type=int, default=512)
     parser.add_argument('--sr', type=int, default=44100)
     parser.add_argument('--min_db', type=int, default=-100)
     parser.add_argument('--ref_db', type=int, default=20)
