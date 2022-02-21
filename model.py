@@ -27,7 +27,7 @@ class Encoder(nn.Module):
         super().__init__()
         self.latent_dim = latent_dim
         self.convs = nn.ModuleList()
-        self.fc = nn.Linear(34816, self.latent_dim)
+        self.fc = nn.Linear(67584, self.latent_dim)
         
         hidden_dims = [64, 128, 256, 512, 512]
 
@@ -68,7 +68,7 @@ class Decoder(nn.Module):
         super().__init__()
         h_dims = [512, 256, 128, 64]
         self.latent_dim = latent_dim
-        self.decoder_input = nn.Linear(latent_dim, 34816) # 67584 for
+        self.decoder_input = nn.Linear(latent_dim, 67584) #34816 for 256, 67584 for 512
         self.convs = nn.ModuleList()
         in_channels = h_dims[0]
         #Very unsatisfactory way of matching dimensions in encoder :/
@@ -117,7 +117,7 @@ class Decoder(nn.Module):
     def forward(self, input, transform_dict_list=[], return_activation_maps=False):
         x = self.decoder_input(input)
         activation_map_list = []
-        x = torch.reshape(x, (input.shape[0],512,4,17)) #512,4,33 for 512 hop
+        x = torch.reshape(x, (input.shape[0],512,4,33)) #512, 4, 17 for 256 #512,4,33 for 512 hop
         for conv in self.convs:
             x = conv(x, transform_dict_list=transform_dict_list)
             activation_map_list.append(x)
@@ -155,9 +155,6 @@ class ConvLayer(nn.Module):
         self.bias = bias
 
         self.zero_pad_2d = nn.ZeroPad2d((0,0,0,0))
-        ##ADD ANOTHER BATCHNORM FOR INPUT? 
-        self.batch_norm_1 = nn.BatchNorm2d(in_channel)
-        self.batch_norm_2 = nn.BatchNorm2d(out_channel)
         self.manipulation = ManipulationLayer(layerID)
         self.transform_dict_list = []
 
@@ -172,7 +169,6 @@ class ConvLayer(nn.Module):
         if self.transpose == True:
             self.layer_seq = nn.Sequential(
                 self.zero_pad_2d,
-                self.batch_norm_1,
                 nn.ConvTranspose2d(
                 self.in_channel,
                 self.out_channel,
@@ -181,13 +177,11 @@ class ConvLayer(nn.Module):
                 stride=self.stride,
                 padding=self.padding,
                 output_padding=self.output_padding), 
-                self.batch_norm_2,
                 self.activation_function
             )
         else:
             self.layer_seq = nn.Sequential(
                 self.zero_pad_2d,
-                self.batch_norm_1,
                 nn.Conv2d(
                 self.in_channel,
                 self.out_channel,
@@ -195,7 +189,6 @@ class ConvLayer(nn.Module):
                 bias=self.bias,
                 stride=self.stride,
                 padding=self.padding),
-                self.batch_norm_2,
                 self.activation_function
             )
 

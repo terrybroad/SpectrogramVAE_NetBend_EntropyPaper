@@ -21,7 +21,7 @@ from torchvision import utils
 from torch import autograd, optim
 from tqdm import tqdm
 from functools import partial
-from torchaudio.transforms import MelScale, Spectrogram
+from torchaudio.transforms import Spectrogram
 from torch.utils.data import DataLoader
 from model import Encoder, Decoder
 from util import *
@@ -121,7 +121,7 @@ if __name__ == "__main__":
               e_optim.step()
               d_optim.step()
 
-              if it_count % 1000 == 0:
+              if it_count % 10000 == 0:
                 utils.save_image(x, f'sample/{str(it_count).zfill(6)}_input.png',
                   nrow=8,
                   normalize=True,

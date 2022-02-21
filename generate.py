@@ -23,12 +23,13 @@ from torchvision import utils
 from torch import autograd, optim
 from tqdm import tqdm
 from functools import partial
-from torchaudio.transforms import MelScale, Spectrogram
+from torchaudio.transforms import Spectrogram
+from torch.utils.data import DataLoader
 from model import Encoder, Decoder
 from util import *
 from transform_util import *
 
-torch.set_default_tensor_type('torch.cuda.FloatTensor')
+# torch.set_default_tensor_type('torch.cuda.FloatTensor')
 
 #Generate one-shot samples from latent space with random or manual seed
 def one_shot_gen(decoder, args, specfunc,  num_samples=1, use_seed=False, seed=1001, z_scale=-2.2, save=True, name="one_shot", path="/home/terence/repos/SpectrogramVAE/sample"):
@@ -154,7 +155,7 @@ def interp_gen(decoder, args, specfunc, num_samples=1, _use_seed=False, _seed=10
     else:
       print("Generated from seed:", seed)
 
-def reconstruct_gen(encoder, decoder, args, specfunc, data, transform_dict_list, path="generated"):
+def reconstruct_gen_dataset(encoder, decoder, args, specfunc, data, transform_dict_list, path="generated"):
   num_batches = np.ceil(len(data) / args.batch)
   batch_idxs = np.array_split(range(len(data)), num_batches)
   wavs = []
@@ -200,6 +201,202 @@ def reconstruct_gen(encoder, decoder, args, specfunc, data, transform_dict_list,
   pathfin = f'{path}/{args.output_name}'
   sf.write(f'{pathfin}.wav', final_wav, args.sr)
   
+def reconstruct_gen_track_regularised(encoder, decoder, args, specfunc, track, dataloader, transform_dict_list, path="generated"):
+  
+  data_sample_batch = next(iter(dataloader)) 
+  awv = audio_array_from_batch(data_sample_batch)
+  aspec = tospec(awv, args, specfunc)                        #get spectrogram array
+  adata = splitcut(aspec, args)    
+  data_batch = adata[np.random.randint(adata.shape[0], size=args.batch), :]
+
+  num_batches = np.ceil(len(track) / 1)
+  batch_idxs = np.array_split(range(len(track)), num_batches)
+  wavs = []
+  spec_arr = []
+  i = 0
+  for batch_idx in batch_idxs:
+    t_batch = track[batch_idx,:]
+    print("tbatch: "+str(t_batch.shape))
+    data_batch[0,:,:] = t_batch
+    print("data_batch: "+str(data_batch.shape))
+    x = torch.tensor(data_batch).to('cuda').transpose(1,3)
+    z, kld, mu = encoder(x)
+    if(args.noise):
+      _x = decoder(z, transform_dict_list)  
+      print("noise")  
+    else:
+      _x = decoder(mu, transform_dict_list)
+      print("no_noise")
+    recon_np = _x.transpose(1,3).cpu().detach().numpy()
+    print("recon_np:" + str(recon_np.shape))
+    recon_slice = np.array([recon_np[0,:,:,:]])
+    print("recon_slice:" + str(recon_slice.shape))
+    spec = testass(recon_slice)
+    if not os.path.exists('recon/input'):
+      os.makedirs('recon/input')
+    utils.save_image(
+        x[0,:,:,:],
+        f'recon/input/{str(i).zfill(6)}.png',
+        nrow=1,
+        normalize=True,
+        range=(-1, 1))
+    if not os.path.exists('recon/output'):
+      os.makedirs('recon/output')
+    utils.save_image(
+        _x[0,:,:,:],
+        f'recon/output/{str(i).zfill(6)}.png',
+        nrow=1,
+        normalize=True,
+        range=(-1, 1))
+    print(spec)
+    spec_arr.append(spec)
+    i = i+1
+    # if i == 0:
+    #   assembled_spec = spec
+    # else:
+    #   assembled_spec = np.concatenate(assembled_spec,spec)
+    wav = towave_from_z(np.array(spec),args,specfunc,args.output_name,path,show=False, save=False)
+    # print("SHAPE: " + str(wav.shape))
+    wavs.append(wav)
+  final_wav = np.concatenate(wavs)
+  pathfin = f'{path}/{args.output_name}'
+  sf.write(f'{pathfin}.wav', final_wav, args.sr)
+  if args.save_spec:
+    full_spec = np.concatenate(spec_arr, 1)
+    print("full spec recon: " + str(full_spec.shape))
+    full_spec_denorm = denormalize(full_spec, args)
+    # full_spec_db = librosa.power_to_db(np.abs(full_spec), ref=np.max)
+    plt.figure(figsize=(10, 4))
+    img = librosa.display.specshow(full_spec_denorm, x_axis='time', y_axis='linear', sr=args.sr, hop_length=args.hop)
+    # plt.colorbar(img, format="%+2.f dB")
+    plt.clim(-60,0)
+    plt.savefig(f'{pathfin}.png')
+
+
+def randomised_reconstruction_reg(encoder, decoder, args, specfunc, track, dataloader, yaml_config, cluster_config, path="generated"):
+  data_sample_batch = next(iter(dataloader)) 
+  awv = audio_array_from_batch(data_sample_batch)
+  aspec = tospec(awv, args, specfunc)                        #get spectrogram array
+  adata = splitcut(aspec, args)    
+  data_batch = adata[np.random.randint(adata.shape[0], size=args.batch), :]
+  num_batches = np.ceil(len(track) / 1)
+  batch_idxs = np.array_split(range(len(track)), num_batches)
+  for i in range(args.num_samples):
+    transform_dict_list = create_transforms_dict_list(yaml_config, cluster_config, layer_channel_dims)
+
+    wavs = []
+    spec_arr = []
+    for batch_idx in batch_idxs:
+      t_batch = track[batch_idx,:]
+      print("tbatch: "+str(t_batch.shape))
+      data_batch[0,:,:] = t_batch
+      print("data_batch: "+str(data_batch.shape))
+      x = torch.tensor(data_batch).to('cuda').transpose(1,3)
+      z, kld, mu = encoder(x)
+      if(args.noise):
+        _x = decoder(z, transform_dict_list)  
+        print("noise")  
+      else:
+        _x = decoder(mu, transform_dict_list)
+        print("no_noise")
+      recon_np = _x.transpose(1,3).cpu().detach().numpy()
+      print("recon_np:" + str(recon_np.shape))
+      recon_slice = np.array([recon_np[0,:,:,:]])
+      print("recon_slice:" + str(recon_slice.shape))
+      spec = testass(recon_slice)
+      spec_arr.append(spec)
+      wav = towave_from_z(np.array(spec),args,specfunc,args.output_name,path,show=False, save=False)
+      wavs.append(wav)
+    final_wav = np.concatenate(wavs)
+    pathfin = f'{path}/{args.output_name}_{i}'
+    sf.write(f'{pathfin}.wav', final_wav, args.sr)
+    if args.save_spec:
+      full_spec = np.concatenate(spec_arr, 1)
+      print("full spec recon: " + str(full_spec.shape))
+      full_spec_denorm = denormalize(full_spec, args)
+      # full_spec_db = librosa.power_to_db(np.abs(full_spec), ref=np.max)
+      fig, ax = plt.subplots()
+      
+      plt.figure(figsize=(10, 4))
+      img = librosa.display.specshow(full_spec_denorm, x_axis='time', y_axis='linear', sr=args.sr, hop_length=args.hop)
+      plt.clim(-60,0)
+      plt.savefig(f'{pathfin}.png')
+
+
+def create_transform_dict_list_cluster(layer, layer_channel_dict, transform, cluster, cluster_config):
+    transform_dict_list = []
+    transform_dict_list.append(
+        create_cluster_transform_dict(layer,
+            layer_channel_dict, 
+            cluster_config,
+            transform['transform'], 
+            transform['params'],
+            cluster))
+            
+    return transform_dict_list
+
+def gen_all_cluster_reg(encoder, decoder, args, specfunc, track, dataloader, yaml_config, cluster_config, path="generated"):
+  cluster_layer_dict = {
+    1 : 5,
+    2 : 5,
+    3 : 4,
+    4 : 4
+    }
+  
+  data_sample_batch = next(iter(dataloader)) 
+  awv = audio_array_from_batch(data_sample_batch)
+  aspec = tospec(awv, args, specfunc)                        #get spectrogram array
+  adata = splitcut(aspec, args)    
+  data_batch = adata[np.random.randint(adata.shape[0], size=args.batch), :]
+  num_batches = np.ceil(len(track) / 1)
+  batch_idxs = np.array_split(range(len(track)), num_batches)
+  for transform in yaml_config['transforms']:
+    for key in layer_channel_dims:
+        if key != 0:     
+            for cluster in tqdm(range(cluster_layer_dict[key])):
+              transform_dict_list = create_transform_dict_list_cluster(key, layer_channel_dims, transform, cluster, cluster_config)
+              wavs = []
+              spec_arr = []
+              for batch_idx in batch_idxs:
+                t_batch = track[batch_idx,:]
+                print("tbatch: "+str(t_batch.shape))
+                data_batch[0,:,:] = t_batch
+                print("data_batch: "+str(data_batch.shape))
+                x = torch.tensor(data_batch).to('cuda').transpose(1,3)
+                z, kld, mu = encoder(x)
+                if(args.noise):
+                  _x = decoder(z, transform_dict_list)  
+                  print("noise")  
+                else:
+                  _x = decoder(mu, transform_dict_list)
+                  print("no_noise")
+                recon_np = _x.transpose(1,3).cpu().detach().numpy()
+                print("recon_np:" + str(recon_np.shape))
+                recon_slice = np.array([recon_np[0,:,:,:]])
+                print("recon_slice:" + str(recon_slice.shape))
+                spec = testass(recon_slice)
+                spec_arr.append(spec)
+                wav = towave_from_z(np.array(spec),args,specfunc,args.output_name,path,show=False, save=False)
+                wavs.append(wav)
+              final_wav = np.concatenate(wavs)
+              if transform['params'] != []:
+                  path = 'cluster_sample/'+transform['transform']+'_'+str(transform['params'])+'/'
+              else:
+                  path = 'cluster_sample/'+transform['transform']+'/'
+              if not os.path.exists(path):
+                  os.makedirs(path)
+              pathfin = f'{path}/layer_{key}_cluster{cluster}'
+              sf.write(f'{pathfin}.wav', final_wav, args.sr)
+              if args.save_spec:
+                full_spec = np.concatenate(spec_arr, 1)
+                print("full spec recon: " + str(full_spec.shape))
+                full_spec_denorm = denormalize(full_spec, args)
+                # full_spec_db = librosa.power_to_db(np.abs(full_spec), ref=np.max)
+                plt.figure(figsize=(7, 7))
+                img = librosa.display.specshow(full_spec_denorm, x_axis='time', y_axis='linear', sr=args.sr, hop_length=args.hop)
+                # plt.colorbar(img, format="%+2.f dB")
+                plt.clim(-60,0)
+                plt.savefig(f'{pathfin}.png')
 
 
 if __name__ == "__main__":
@@ -226,7 +423,10 @@ if __name__ == "__main__":
     parser.add_argument('--config', type=str, default="configs/example_transform_config.yaml")
     parser.add_argument('--clusters', type=str, default="")
     parser.add_argument('--noise', type=bool, default=False)
-
+    parser.add_argument('--track', type=str, default="")
+    parser.add_argument('--tracks_p_batch', type=int, default=100)
+    parser.add_argument('--save_spec', type=bool, default=False)
+    parser.add_argument('--num_samples', type=int, default=20)
     args = parser.parse_args()
 
     encoder = Encoder(args.vector_dim)
@@ -258,21 +458,44 @@ if __name__ == "__main__":
     new_state_dict_e = encoder.state_dict()
     new_state_dict_e.update(checkpoint['encoder'])
     encoder.load_state_dict(new_state_dict_e)
-
+    encoder.to('cuda')
     new_state_dict_d = decoder.state_dict()
     new_state_dict_d.update(checkpoint['decoder'])
     decoder.load_state_dict(new_state_dict_d)
+    decoder.to('cuda')
+
 
 
     specobj = Spectrogram(n_fft=4*args.hop, win_length=4*args.hop, hop_length=args.hop, pad=0, power=2, normalized=False)
     specfunc = specobj.forward
 
+
+    dataset = AudioData(args.data)
+    dataloader = DataLoader(dataset, batch_size=args.tracks_p_batch, collate_fn=collate_list, shuffle=True, num_workers=0)
+
     #AUDIO TO CONVERT
-    awv = audio_array_from_path(args.data)         #get waveform array from folder containing wav files
+    awv = audio_array_from_track(args.track)         #get waveform array from folder containing wav files
     print(awv)
-    aspec = tospec(awv, args, specfunc)                        #get spectrogram array
-    adata = splitcut(aspec, args)    
+    track_spec = tospec(awv, args, specfunc)   
+    print(track_spec)                 
+    track_data = splitcut(track_spec, args)    
+    print(track_data)
+
+    if args.save_spec:
+      full_spec = testass(track_data)
+      print("full spec: " + str(full_spec.shape))
+      full_spec_denorm = denormalize(full_spec, args)
+      # full_spec_db = librosa.power_to_db(np.abs(full_spec), ref=np.max)
+      
+      plt.figure(figsize=(10, 4))
+      img = librosa.display.specshow(full_spec_denorm, x_axis='time', y_axis='linear', sr=args.sr, hop_length=args.hop)
+      # plt.colorbar(img, format="%+2.f dB")
+      plt.clim(-60,0)
+      
+      plt.savefig("input.png")
     #one_shot_gen(decoder, args, specfunc, num_samples=10, name="amazondotcom_test")
     # noise_gen(decoder, args, specfunc, num_samples=64,_use_seed=False,_noise_type="perlin", z_scale=2.5, name="uniform_test2s", save=True)
     # interp_gen(decoder, args, specfunc, num_samples=10, _use_seed=False, _seed=1001, interp_steps=64, z_scale=-1.5, interp_scale=5.0, save=True, name="interp_test2", path="/home/terence/repos/SpectrogramVAE/sample")
-    reconstruct_gen(encoder, decoder, args, specfunc, adata, transform_dict_list, path="/home/terence/repos/SpectrogramVAE/generated")
+    reconstruct_gen_track_regularised(encoder, decoder, args, specfunc, track_data, dataloader, transform_dict_list, path="/home/terence/repos/SpectrogramVAE/generated")
+    # randomised_reconstruction_reg(encoder, decoder, args, specfunc, track_data, dataloader, yaml_config, cluster_config, path="/home/terence/repos/SpectrogramVAE/randomised")
+    # gen_all_cluster_reg(encoder, decoder, args, specfunc, track_data, dataloader, yaml_config, cluster_config, path="/home/terence/repos/SpectrogramVAE/randomised")

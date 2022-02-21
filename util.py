@@ -50,6 +50,13 @@ def audio_array_from_path(path):
     adata.append(x[0])
   return np.array(adata)
 
+def audio_array_from_track(path):
+  adata = []
+  x, sr = torchaudio.load(path)
+  x = x.numpy()
+  adata.append(x[0])
+  return np.array(adata)
+
 def audio_array_from_tensor(audio_tensor):
     adata = []
     x = audio_tensor.numpy()
@@ -209,6 +216,7 @@ def splitcut(data,args):
   ls = []
   mini = 0
   minifinal = args.spec_split*args.shape   #max spectrogram length
+  print(data.shape[0])
   for i in range(data.shape[0]-1):
     if data[i].shape[1]<=data[i+1].shape[1]:
       mini = data[i].shape[1]
